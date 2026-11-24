@@ -354,7 +354,7 @@ const LIVE_TAP_LEAD_S = 0.05;   // handed over this far ahead of the playhead (t
 const forceTap = pageParams.has('livetap');
 const noTap = pageParams.has('nolivetap');
 let elementHeard = forceTap ? false : null; // does the <audio> element reach the analysers on the live stream?
-let liveTap = null;   // { tap, committed, elStart, elPrev, elPeak, startedMs }
+let liveTap = null;   // { tap, committed, fed, elStart, elPrev, elPeak, startedMs }
 let tapNode = null;   // the feed worklet the tap's audio goes into (made once)
 let tapNodeMaking = null;
 let radioNode = null; // the <audio> element's MediaElementAudioSourceNode
@@ -364,7 +364,7 @@ function startLiveTap() {
   if (noTap || embed || tape || micOn || elementHeard === true || !audioCtx) return;
   if (typeof fetch === 'undefined' || typeof ReadableStream === 'undefined' || !audioCtx.audioWorklet) return;
   const tap = new LiveTap(STREAM_URL, audioCtx);
-  liveTap = { tap, committed: false, elStart: null, elPrev: -1, elPeak: 0, startedMs: performance.now() };
+  liveTap = { tap, committed: false, fed: false, elStart: null, elPrev: -1, elPeak: 0, startedMs: performance.now() };
   tap.start();
   if (elementHeard === false) commitLiveTap();
 }
@@ -420,7 +420,10 @@ function updateLiveTap(audioEl) {
     return;
   }
   const blocks = t.tap.take(pos - t.elStart + LIVE_TAP_LEAD_S);
-  if (t.committed && tapNode) for (const b of blocks) tapNode.port.postMessage({ pcm: b.pcm, rate: b.rate }, [b.pcm.buffer]);
+  if (t.committed && tapNode) {
+    for (const b of blocks) tapNode.port.postMessage({ pcm: b.pcm, rate: b.rate }, [b.pcm.buffer]);
+    if (blocks.length) t.fed = true;
+  }
   if (t.committed) return;
   const played = pos - t.elStart;
   if (analysisReady) t.elPeak = Math.max(t.elPeak, cvState.raw.audio_amp);
@@ -442,9 +445,11 @@ function updateSignal(dt) {
   let quiet = quietFor > 4;
   if (!micOn && elementHeard === false && (!liveTap || liveTap.tap.failed)) {
     quiet = false; // the analysers can't hear this stream and the tap can't decode it: only the playhead tells
-  } else if (!micOn && liveTap && !liveTap.committed && liveStuck < 1
+  } else if (!micOn && liveTap && (!liveTap.committed || !liveTap.fed)
     && performance.now() - liveTap.startedMs < (LIVE_TAP_GIVE_UP_S + 5) * 1000) {
-    quiet = false; // still finding out whether the analysers hear the element
+    // Still finding out whether the analysers hear the element, or the tap has not fed them yet: the
+    // first seconds after power-on are not silence (a stream that never starts is caught by the playhead).
+    quiet = false;
   }
   cvState.noSignal = wantAudio && !noStatic && (quiet || liveStuck > LIVE_STUCK_S);
   const now = performance.now();
