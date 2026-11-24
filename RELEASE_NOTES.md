@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Web TV: Visuals Follow the Live Radio on iPhone (`web/livetap.js`, `web/ogg.js`, `web/dsp.js`)
+- **Fixed: on iPhone (Safari), the live radio played but the picture showed NO SIGNAL** after a few seconds, and the sound hiccuped as the TV kept reconnecting. Safari plays the live stream but doesn't let the page hear it, so the TV thought the radio was silent. Now, when the page can't hear the radio, the TV listens to a second copy of the stream and the visuals follow that, in time with what you hear. Tapes were not affected. Other browsers are unchanged, apart from a second connection for the first few seconds of each live start while the TV checks. On iPhone the second copy runs the whole time, so the live radio uses about twice the data (TV v58).
+
 ### Web TV: Download Any Show From TAPES (`web/tapedeck.js`, `web/tv.css`)
 - **New: every show in the TAPES list has a ⤓ download button** before its name. It saves the show's OGG file without playing it, like the download button on each show in the Spaz Radio app's archive (TV v57).
 

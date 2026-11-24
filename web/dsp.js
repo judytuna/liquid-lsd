@@ -5,6 +5,7 @@ import { BeatTracker, BeatClock } from './beattrack.js';
 import { EnergyWatch } from './energy.js';
 import { embed } from './embedmode.js';
 import { SpectrumAnalyzer, audioFrame, BINS } from './audiotex.js';
+import { LiveTap } from './livetap.js';
 
 export const cvState = {
   // The audio_* signals are normalised exactly as the desktop's AudioEngine publishes them (auto gain,
@@ -332,13 +333,120 @@ const SILENT_AMP = 0.004;
 let wantAudio = false;
 let quietFor = 0;
 let lastRetryMs = 0;
-const noStatic = typeof location !== 'undefined' && new URLSearchParams(location.search).has('nostatic');
+const pageParams = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
+const noStatic = pageParams.has('nostatic');
+
+// The live stream's playhead: stuck this long with the TV on is no signal, however loud the analysers say
+// it is. Silence alone is not enough where the analysers cannot hear the stream at all (below).
+const LIVE_STUCK_S = 6;
+let liveStuck = 0;
+let liveLastT = -1;
+
+// The live tap (livetap.js). Safari on iPhone plays the live stream but gives createMediaElementSource
+// silence, so each time the live stream starts, a LiveTap decodes a second copy of it. Once the element has
+// played LIVE_TAP_DECIDE_S: if the analysers heard it, the tap stops (and is not started again on this
+// page); if they heard nothing but the tap heard music, the tap feeds the analysers from then on, its
+// audio handed over as the element's playhead reaches it. `?livetap` uses the tap at once (to try it in
+// any browser), `?nolivetap` never starts one.
+const LIVE_TAP_DECIDE_S = 3;
+const LIVE_TAP_GIVE_UP_S = 15;  // both silent this long: dead air, and the usual watchdog takes over
+const LIVE_TAP_LEAD_S = 0.05;   // handed over this far ahead of the playhead (the feed worklet's prefill)
+const forceTap = pageParams.has('livetap');
+const noTap = pageParams.has('nolivetap');
+let elementHeard = forceTap ? false : null; // does the <audio> element reach the analysers on the live stream?
+let liveTap = null;   // { tap, committed, elStart, elPrev, elPeak, startedMs }
+let tapNode = null;   // the feed worklet the tap's audio goes into (made once)
+let tapNodeMaking = null;
+let radioNode = null; // the <audio> element's MediaElementAudioSourceNode
+
+function startLiveTap() {
+  stopLiveTap();
+  if (noTap || embed || tape || micOn || elementHeard === true || !audioCtx) return;
+  if (typeof fetch === 'undefined' || typeof ReadableStream === 'undefined' || !audioCtx.audioWorklet) return;
+  const tap = new LiveTap(STREAM_URL, audioCtx);
+  liveTap = { tap, committed: false, elStart: null, elPrev: -1, elPeak: 0, startedMs: performance.now() };
+  tap.start();
+  if (elementHeard === false) commitLiveTap();
+}
+
+function makeTapNode() {
+  if (!tapNodeMaking) {
+    tapNodeMaking = audioCtx.audioWorklet.addModule('feed-worklet.js').then(() => {
+      tapNode = new AudioWorkletNode(audioCtx, 'lsd-feed', { numberOfInputs: 0, outputChannelCount: [1] });
+      const sink = audioCtx.createGain(); // keeps the worklet pulled; nothing is heard from it
+      sink.gain.value = 0;
+      tapNode.connect(sink);
+      sink.connect(audioCtx.destination);
+    });
+  }
+  return tapNodeMaking;
+}
+
+/** The tap's audio goes to the analysers in place of the element's. */
+function commitLiveTap() {
+  const t = liveTap;
+  if (!t || t.committed) return;
+  t.committed = true;
+  makeTapNode().then(() => {
+    if (liveTap !== t) return;
+    try { radioNode?.disconnect(analysisIn); } catch { /* not connected */ }
+    tapNode.connect(analysisIn);
+  }).catch((err) => {
+    console.warn('[dsp] live tap unavailable:', err.message);
+    t.tap.fail(err);
+  });
+}
+
+function stopLiveTap() {
+  const t = liveTap;
+  if (!t) return;
+  liveTap = null;
+  t.tap.stop();
+  if (t.committed && tapNode) {
+    try { tapNode.disconnect(analysisIn); } catch { /* not connected yet */ }
+    radioNode?.connect(analysisIn); // tapes and the next element source go through the element again
+  }
+}
+
+/** Hands the tap's audio over as the element's playhead reaches it, and decides whether it is needed. */
+function updateLiveTap(audioEl) {
+  const t = liveTap;
+  const pos = audioEl.currentTime;
+  if (t.elStart === null) {
+    // The element's position counts from the start of its connection, like the tap's (both get the same
+    // burst from Icecast): the first movement marks where it began.
+    if (t.elPrev >= 0 && pos > t.elPrev && !audioEl.paused) t.elStart = t.elPrev;
+    t.elPrev = pos;
+    return;
+  }
+  const blocks = t.tap.take(pos - t.elStart + LIVE_TAP_LEAD_S);
+  if (t.committed && tapNode) for (const b of blocks) tapNode.port.postMessage({ pcm: b.pcm, rate: b.rate }, [b.pcm.buffer]);
+  if (t.committed) return;
+  const played = pos - t.elStart;
+  if (analysisReady) t.elPeak = Math.max(t.elPeak, cvState.raw.audio_amp);
+  if (played < LIVE_TAP_DECIDE_S) return;
+  if (t.elPeak > SILENT_AMP) { elementHeard = true; stopLiveTap(); }        // the analysers hear the element
+  else if (t.tap.peak > SILENT_AMP) { elementHeard = false; commitLiveTap(); } // they don't, the tap does
+  else if (played > LIVE_TAP_GIVE_UP_S || t.tap.failed) stopLiveTap();
+}
 
 function updateSignal(dt) {
   if (embed) { cvState.noSignal = false; return; } // the host plays the radio; silence is just a quiet picture
   if (tape && !micOn) { updateTapeSignal(dt); return; }
+  const audioEl = document.getElementById('lsdAudio');
+  if (liveTap && audioEl) updateLiveTap(audioEl);
+  const moved = !!audioEl && audioEl.currentTime !== liveLastT;
+  liveLastT = audioEl ? audioEl.currentTime : -1;
+  liveStuck = !wantAudio || micOn || moved ? 0 : liveStuck + dt;
   quietFor = analysisReady && cvState.raw.audio_amp > SILENT_AMP ? 0 : quietFor + dt;
-  cvState.noSignal = wantAudio && !noStatic && quietFor > 4;
+  let quiet = quietFor > 4;
+  if (!micOn && elementHeard === false && (!liveTap || liveTap.tap.failed)) {
+    quiet = false; // the analysers can't hear this stream and the tap can't decode it: only the playhead tells
+  } else if (!micOn && liveTap && !liveTap.committed && liveStuck < 1
+    && performance.now() - liveTap.startedMs < (LIVE_TAP_GIVE_UP_S + 5) * 1000) {
+    quiet = false; // still finding out whether the analysers hear the element
+  }
+  cvState.noSignal = wantAudio && !noStatic && (quiet || liveStuck > LIVE_STUCK_S);
   const now = performance.now();
   if (cvState.noSignal && !micOn && now - lastRetryMs > 10000) {
     lastRetryMs = now;
@@ -352,6 +460,8 @@ function reconnect() {
   if (!audioEl || !audioCtx) return;
   if (tape) { loadTape().catch(() => { /* next try in 10 s */ }); return; }
   audioEl.src = `${STREAM_URL}?t=${Date.now()}`;
+  liveStuck = 0;
+  startLiveTap();
   audioEl.play().then(() => { analysisReady = true; cvState.isLive = true; }).catch(() => { /* next try in 10 s */ });
 }
 
@@ -416,6 +526,7 @@ function resetAnalysis() {
 /** Plays a tape from `startAt` seconds, instead of the radio or the microphone. */
 export function insertTape(url, startAt = 0) {
   tape = { url, pos: startAt, paused: false, ready: false, stuck: 0, lastT: 0 };
+  stopLiveTap();
   releaseMic();
   resetAnalysis();
   if (wantAudio) loadTape().catch((err) => console.warn('[dsp] tape did not start:', err.message)); // TV off: power-on starts it
@@ -522,6 +633,7 @@ export async function setMic(on) {
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
     });
     micStream = stream;
+    stopLiveTap();
     micSource = audioCtx.createMediaStreamSource(stream);
     micSource.connect(analysisIn);
     micOn = true;
@@ -565,6 +677,7 @@ export async function startAudio() {
     audioEl?.addEventListener('ended', () => { if (tape) window.dispatchEvent(new CustomEvent('lsd-tape-ended')); });
 
     const radio = embed ? null : audioCtx.createMediaElementSource(audioEl);
+    radioNode = radio;
     // Everything that is analysed comes through `source`: the radio, or the microphone (which is never
     // sent to the speakers, so it cannot feed back).
     const source = audioCtx.createGain();
@@ -696,7 +809,7 @@ export async function startAudio() {
   if (embed) { /* the host app plays the radio */ }
   else if (micOn) audioEl.pause();  // the microphone is the input; the radio waits
   else if (tape) { tape.paused = false; await loadTape(); }
-  else await audioEl.play();
+  else { liveStuck = 0; startLiveTap(); await audioEl.play(); }
 
   cvState.isLive = true;
   analysisReady = true;
@@ -705,6 +818,7 @@ export async function startAudio() {
 // Stop audio stream and pause analysis on power off
 export async function stopAudio() {
   wantAudio = false;
+  stopLiveTap();
   releaseMic();
   if (tape) tape.ready = false; // it stays in, at tape.pos
   cvState.noSignal = false;

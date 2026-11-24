@@ -13,6 +13,7 @@ const REVALIDATE_MS = 6 * 3600e3; // how often cached content is checked against
 const SHELL = [
   './', 'index.html', 'tv.css', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'favicon.png',
   'ui.js', 'renderer.js', 'autopilot.js', 'dsp.js', 'beatclock.js', 'beattrack.js', 'energy.js', 'onset-worklet.js',
+  'livetap.js', 'ogg.js', 'feed-worklet.js', 'feedring.js',
   'evaluator.js', 'graph.js', 'isf.js', 'lite.js', 'mandala.js', 'gallery.js', 'gallery.json', 'pairing.js', 'preset.js',
   'settings.json', 'catalog.json', 'mandala_recipes.json', 'playlists/default.lsdplay', 'playlists/default_bg.lsdplay',
   'shaders/blit.vert', 'shaders/blit.frag', 'shaders/mandala.vert', 'shaders/mandala.frag', 'shaders/mixer.frag',
