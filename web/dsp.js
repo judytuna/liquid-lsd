@@ -341,6 +341,9 @@ const noStatic = pageParams.has('nostatic');
 const LIVE_STUCK_S = 6;
 let liveStuck = 0;
 let liveLastT = -1;
+const LIVE_SETUP_S = 10;  // power-on until the live tap starts (building the audio graph): silence is no fault
+let liveFromMs = 0;
+let livePlayAsked = false; // the element has been told to play (the playhead can't be stuck before)
 
 // The live tap (livetap.js). Safari on iPhone plays the live stream but gives createMediaElementSource
 // silence, so each time the live stream starts, a LiveTap decodes a second copy of it. Once the element has
@@ -440,16 +443,20 @@ function updateSignal(dt) {
   if (liveTap && audioEl) updateLiveTap(audioEl);
   const moved = !!audioEl && audioEl.currentTime !== liveLastT;
   liveLastT = audioEl ? audioEl.currentTime : -1;
-  liveStuck = !wantAudio || micOn || moved ? 0 : liveStuck + dt;
+  liveStuck = !wantAudio || micOn || moved || !livePlayAsked ? 0 : liveStuck + dt;
   quietFor = analysisReady && cvState.raw.audio_amp > SILENT_AMP ? 0 : quietFor + dt;
+  if (!micOn && (liveTap
+    ? (!liveTap.committed || !liveTap.fed) && performance.now() - liveTap.startedMs < (LIVE_TAP_GIVE_UP_S + 5) * 1000
+    : performance.now() - liveFromMs < LIVE_SETUP_S * 1000)) {
+    // The first seconds of the live stream are not silence: the audio graph is still being built (the first
+    // power-on loads its worklets), the tap is still finding out whether the analysers hear the element, or
+    // it has not fed them yet. Silence counts from when that is over; a stream that never starts is caught
+    // by the playhead.
+    quietFor = 0;
+  }
   let quiet = quietFor > 4;
   if (!micOn && elementHeard === false && (!liveTap || liveTap.tap.failed)) {
     quiet = false; // the analysers can't hear this stream and the tap can't decode it: only the playhead tells
-  } else if (!micOn && liveTap && (!liveTap.committed || !liveTap.fed)
-    && performance.now() - liveTap.startedMs < (LIVE_TAP_GIVE_UP_S + 5) * 1000) {
-    // Still finding out whether the analysers hear the element, or the tap has not fed them yet: the
-    // first seconds after power-on are not silence (a stream that never starts is caught by the playhead).
-    quiet = false;
   }
   cvState.noSignal = wantAudio && !noStatic && (quiet || liveStuck > LIVE_STUCK_S);
   const now = performance.now();
@@ -466,6 +473,7 @@ function reconnect() {
   if (tape) { loadTape().catch(() => { /* next try in 10 s */ }); return; }
   audioEl.src = `${STREAM_URL}?t=${Date.now()}`;
   liveStuck = 0;
+  livePlayAsked = true;
   startLiveTap();
   audioEl.play().then(() => { analysisReady = true; cvState.isLive = true; }).catch(() => { /* next try in 10 s */ });
 }
@@ -672,6 +680,8 @@ export async function startAudio() {
 
   wantAudio = true;
   quietFor = 0;
+  liveFromMs = performance.now();
+  livePlayAsked = false;
   lastRetryMs = performance.now(); // the first reconnect waits for this attempt to fail
   // Set stream src on user gesture (embed mode: the host app plays the radio and feeds us instead)
   if (!embed && !tape) audioEl.src = STREAM_URL;
@@ -814,7 +824,7 @@ export async function startAudio() {
   if (embed) { /* the host app plays the radio */ }
   else if (micOn) audioEl.pause();  // the microphone is the input; the radio waits
   else if (tape) { tape.paused = false; await loadTape(); }
-  else { liveStuck = 0; startLiveTap(); await audioEl.play(); }
+  else { liveStuck = 0; livePlayAsked = true; startLiveTap(); await audioEl.play(); }
 
   cvState.isLive = true;
   analysisReady = true;
