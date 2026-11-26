@@ -129,11 +129,13 @@ export function nameHash(name) {
 /**
  * The chat. `onChange(what)` fires with 'messages' (the log was merged in) | 'roster' | 'status' | 'nick';
  * `onLive(msg)` for each line that arrives over the wire, after it is in state.messages. Dependencies are injectable for the tests.
+ * `channels`: other things that share the connection on topics of their own (chalk.js), each
+ * {topic, onMessage(payload), onReady()}; they publish with chat.publish().
  */
 export function createChat({
   onChange = () => {}, onLive = () => {},
   fetchImpl = (...a) => fetch(...a), WebSocketImpl = globalThis.WebSocket,
-  now = () => Date.now(), clientId = newClientId(), storage = null,
+  now = () => Date.now(), clientId = newClientId(), storage = null, channels = [],
   setIntervalImpl = (f, ms) => setInterval(f, ms), clearIntervalImpl = (t) => clearInterval(t),
 } = {}) {
   const presenceTopic = `presence/${clientId}`;
@@ -180,6 +182,9 @@ export function createChat({
       else state.roster.set(id, name);
       namesCache = null;
       onChange('roster');
+    } else {
+      const ch = channels.find((c) => c.topic === topic);
+      if (ch) { try { ch.onMessage(payload); } catch { /* the channel's bug must not stop the chat */ } }
     }
   }
 
@@ -195,7 +200,7 @@ export function createChat({
       client = createClient({
         url: BROKER, clientId, keepAlive: 30, WebSocketImpl,
         will: { topic: presenceTopic, payload: '', qos: 1, retain: true },
-        subscriptions: [{ topic: CHAN, qos: 1 }, { topic: 'presence/#', qos: 1 }],
+        subscriptions: [{ topic: CHAN, qos: 1 }, { topic: 'presence/#', qos: 1 }, ...channels.map((c) => ({ topic: c.topic, qos: 0 }))],
         onState: (s) => {
           state.status = s;
           if (s !== 'online' && state.roster.size) { state.roster.clear(); namesCache = null; onChange('roster'); }
@@ -204,6 +209,7 @@ export function createChat({
         onReady: () => {
           loadHistory(); // fills in whatever was said while the connection was down
           if (state.nick) announce(state.nick);
+          for (const c of channels) { try { c.onReady?.(); } catch { /* as above */ } }
         },
         onMessage,
       });
@@ -213,6 +219,13 @@ export function createChat({
       }, SELF_HEAL_MS);
     },
     reconnectNow() { client?.reconnectNow(); },
+    /** Publishes on one of the channels' topics (QoS 0, never retained); never on the chat's or presence. */
+    publish(topic, payload) {
+      if (!channels.some((c) => c.topic === topic)) return Promise.reject(new Error('not a channel'));
+      if (state.status !== 'online') return Promise.reject(new Error('offline'));
+      return client.publish(topic, payload, { qos: 0 });
+    },
+    get online() { return state.status === 'online'; },
     /** The headless check's fake broker and log, swapped in before start(). */
     useTransport(t) { if (!started) ({ WebSocketImpl = WebSocketImpl, fetchImpl = fetchImpl } = t); },
     /** Sets or changes the name; a change clears the old one first (the legacy client's order). */

@@ -237,5 +237,7 @@ export function createChatboard({ chat, board, button, reduced = () => false, st
     hide() { setOpen(false); },
     toggle() { setOpen(!isOpen(), { focus: true }); },
     setTape(on) { tapeNote.hidden = !on; if (atBottom()) stickToBottom(); },
+    /** The chalk tray along the frame's foot: chalklayer.js puts the sticks and the eraser in it. */
+    tray,
   };
 }

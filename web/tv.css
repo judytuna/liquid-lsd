@@ -1152,6 +1152,28 @@ body.chat-open:not(.kiosk) #chalkboard {
 .cb-eraser { position: absolute; right: 16%; top: -9px; width: 54px; height: 13px; border-radius: 2px;
   background: linear-gradient(#4f4a44 0 55%, #d9d3c3 55% 100%); box-shadow: 0 1px 2px rgba(0,0,0,0.6); }
 
+/* --- CHALK (chalk.js, chalklayer.js): everyone's chalk on the TV's glass, over the picture and its OSD, under
+   the menu and the pages. It takes the pointer only while a stick is picked up from the tray. --- */
+#chalkCanvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
+body.kiosk #chalkCanvas { display: none; }
+#chalkCanvas.ck-clean { opacity: 0; }
+body.chalk-drawing #chalkCanvas { pointer-events: auto; touch-action: none; cursor: crosshair; }
+/* While a stick is up the cabinet says so: the screen's bezel picks up a chalky edge */
+body.chalk-drawing #tv-screen-area { box-shadow: inset 0 0 30px rgba(0,0,0,0.8), 0 0 0 2px rgba(238,235,221,0.55); }
+.ck-tray { display: flex; align-items: flex-start; gap: 10px; padding-left: 14%; }
+.ck-tray button { font: inherit; padding: 0; border: 0; cursor: pointer; flex: 0 0 auto; }
+.ck-stick { position: relative; top: -4px; width: 28px; height: 8px; border-radius: 3px;
+  background: linear-gradient(rgba(255,255,255,0.35), rgba(0,0,0,0.12)), var(--ck);
+  box-shadow: 0 1px 1px rgba(0,0,0,0.5); transform: rotate(-4deg); transition: transform 0.15s ease, top 0.15s ease; }
+.ck-stick:nth-child(even) { transform: rotate(3deg); }
+.ck-stick:hover, .ck-stick:focus-visible { top: -7px; }
+.ck-stick.up { top: -14px; transform: rotate(-18deg); box-shadow: 0 4px 5px rgba(0,0,0,0.55), 0 0 6px var(--ck); }
+.ck-eraser { position: relative; top: -10px; margin-left: auto; margin-right: 10%; width: 54px; height: 14px; border-radius: 2px;
+  background: linear-gradient(#4f4a44 0 55%, #d9d3c3 55% 100%); box-shadow: 0 1px 2px rgba(0,0,0,0.6); }
+.ck-eraser:hover, .ck-eraser:focus-visible { top: -12px; }
+.ck-tray :focus-visible { outline: 2px dashed rgba(238,235,221,0.7); outline-offset: 3px; }
+@media (pointer: coarse) { .ck-tray { gap: 14px; } .ck-stick { width: 32px; height: 10px; } }
+
 /* The CHAT button's LED: lit while the board is open, like HOLD's; blinks for new lines while it is closed */
 #chatBtn.unread .btn-led { background: var(--lamp); box-shadow: var(--lamp-glow); }
 body:not(.reduced-motion) #chatBtn.unread .btn-led { animation: cb-blink 1.6s ease-in-out infinite; }

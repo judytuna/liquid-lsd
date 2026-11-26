@@ -9,7 +9,9 @@ import { autopilotState, advanceForeground, previousForeground, randomForeground
   tuneTo } from './autopilot.js';
 import { createMenu } from './menu.js';
 import { heardBeats, tapOffset } from './sync.js';
-import { createChat } from './chat.js';
+import { createChat, newClientId } from './chat.js';
+import { createChalk, TOPIC as CHALK_TOPIC } from './chalk.js';
+import { createChalkLayer } from './chalklayer.js';
 import { createChatboard } from './chatboard.js';
 import { createTapeDeck } from './tapedeck.js';
 import { appUrl, parseTapeLink, archiveFileFor, tapesState, restoreTapes, refreshTapes, tapesStale } from './tapes.js';
@@ -352,6 +354,7 @@ function showIdent() {
 }
 const kiosk = embed || new URLSearchParams(location.search).has('kiosk'); // embed is a kiosk without the extras
 let chatboard = null;      // the chat's blackboard (chatboard.js); none under kiosk / embed
+let chalkLayer = null;     // CHALK on the TV's glass (chalk.js, chalklayer.js); none under kiosk / embed
 let deck = null;           // the VCR (tapedeck.js); none under kiosk / embed
 let syncKeys = () => {};   // puts the key bank's keys in step with the pages (set up with the controls)
 
@@ -931,11 +934,21 @@ export function initUI() {
   if (!kiosk) {
     let storage = null;
     try { storage = localStorage; } catch { /* private window: nothing remembered */ }
-    const chat = createChat({ storage, onChange: (what) => chatboard?.onChange(what), onLive: (msg) => chatboard?.onLive(msg) });
+    // CHALK shares the chat's connection on a topic of its own (chalk.js), so it is set up with it.
+    const clientId = newClientId();
+    let chalk = null;
+    const chalkChannel = { topic: CHALK_TOPIC, onMessage: (p) => chalk?.onMessage(p), onReady: () => chalk?.onReady() };
+    const chat = createChat({ storage, clientId, channels: [chalkChannel],
+      onChange: (what) => chatboard?.onChange(what), onLive: (msg) => chatboard?.onLive(msg) });
     chatboard = createChatboard({ chat, board: document.getElementById('chalkboard'), button: document.getElementById('chatBtn'),
       reduced: () => viewerState.reducedNow, storage });
     const noLive = new URLSearchParams(location.search).has('nolive');
     if (!noLive) chatboard.startOnOpen(() => chat.start()); // connects when the board is first opened
+    chalk = createChalk({ transport: chat, id: clientId, onChange: () => chalkLayer?.redraw(),
+      onEvent: (ev) => { if (ev.kind === 'wiped' && powerState.on) message(ev.by ? `CHALK WIPED BY ${ev.by.toUpperCase()}` : 'CHALK WIPED'); } });
+    chalkLayer = createChalkLayer({ chalk, screen: document.getElementById('tv-screen-area'), tray: chatboard.tray,
+      say: (text) => message(text, 2500), nick: () => chat.state.nick,
+      start: () => { if (!noLive) chat.start(); } }); // picking up a stick connects, like opening the board
     document.getElementById('chatBtn').addEventListener('click', () => chatboard.toggle());
     window.addEventListener('online', () => chat.reconnectNow());
     window.addEventListener('pagehide', () => chat.leave()); // clears our name from the room at once
@@ -996,7 +1009,10 @@ export function initUI() {
 
   // --- Keyboard ---
   window.addEventListener('keydown', (e) => {
+    // CHALK: Ctrl/Cmd+Z takes back your last stroke while a stick is up; Esc puts it down.
+    if (chalkLayer?.drawing && (e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); chalkLayer.undo(); return; }
     if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, textarea')) return;
+    if (chalkLayer?.drawing && e.key === 'Escape') { e.preventDefault(); chalkLayer.setDrawing(false); return; }
     if (schedule.open) { e.preventDefault(); schedule.hide(); return; }
     if (!keysPage.hidden) { e.preventDefault(); keysPage.hidden = true; return; }
     if (deck?.pageOpen) { deck.key(e); return; }
@@ -1009,6 +1025,8 @@ export function initUI() {
     if (e.key === 's' || e.key === 'S') { e.preventDefault(); schedule.show(); return; }
     if ((e.key === 't' || e.key === 'T') && deck) { e.preventDefault(); deck.open(); return; }
     if ((e.key === 'c' || e.key === 'C') && chatboard) { e.preventDefault(); chatboard.toggle(); return; }
+    if ((e.key === 'b' || e.key === 'B') && chalkLayer) { e.preventDefault(); chalkLayer.toggle(); return; }
+    if ((e.key === 'z' || e.key === 'Z') && chalkLayer?.drawing) { e.preventDefault(); chalkLayer.undo(); return; }
     if (e.key === '?') { e.preventDefault(); showKeys(); return; }
     const keys = {
       ArrowRight: next, n: next, N: next,
